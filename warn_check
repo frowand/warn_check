@@ -1,0 +1,692 @@
+#! /bin/bash
+# SPDX-License-Identifier: GPL-2.0
+#
+# Author: Frank Rowand
+
+#_______________________________________________________________________________
+
+# TODO
+#
+# - KBUILD_OUTPUT is supported.  Add support for 'O='
+#
+# - git version is placed in warnings info files.  Add option to place
+#   other information in info files
+#
+# - add option to not strip off leading path from file names
+#
+# - real command line get options (or more robust error checking,
+#   eg -d requires a data item)
+#
+# - --rf0, --rf1, --rf2, --rf3 are awkward.  Change to a better syntax and
+#   implementation
+#
+# - parameter "source_file" is required even when --data-dir is specified.
+#   Remove this requirement
+#
+# - option to process multiple source files in one invocation
+#
+# - option to specify old git commit and new git commit.  Check out the old
+#   commit, process, check out the new commit, process.  Additional option
+#   to process all source files modified in old_commit..new_commit
+
+
+#_______________________________________________________________________________
+
+
+function clean_up_for_exit
+{
+
+if [[ $save_tmp == 1 ]] ; then
+	echo "Not removing: ${path_warn}"                                         >&2
+else
+	rm -r ${path_warn}
+fi
+}
+
+
+#_______________________________________________________________________________
+
+
+function usage
+{
+cat >&2 << eod
+
+usage:
+    `basename $0` -h | -help | --help
+    `basename $0` [-r | --reply] source_file
+
+       -d             synonym for --data-dir
+      --data-dir DIR  use existing warnings files in DIR, do not create new
+                         this will invoke --save-tmp
+       -s             synonym for --save-tmp
+      --save-tmp      do not delete temp directories that contain
+                      base64 or quoted printable versions
+       -v             synonym for --verbose
+      --verbose       report extra information on progress
+
+   Check source_file for different warnings in old vs new version.
+	Supports .c and .S source files.
+
+	Ensure that the old version of source_file is present when this
+	script is executed.  After collecting warnings for the old version,
+	you will be prompted to apply file changes to create the new version
+	(eg 'git checkout' new version).
+
+	Path of source_file is relative to the root of the Linux kernel
+	source tree.
+
+	This script must be run from the root of the Linux kernel source
+	tree.
+
+eod
+
+}
+
+
+unset data_dir
+unset save_tmp
+unset source_file
+unset verbose
+
+rf0=0
+rf1=0
+rf2=0
+rf3=0
+
+while [[ ($# -gt 0) ]] ; do
+
+	case $1 in
+
+		-d | --data-dir )
+			shift
+			data_dir=$1
+			shift
+			;;
+
+		-h | -help | --help )
+			shift
+			help=1
+			;;
+
+		--rf0 )
+			shift
+			rf0=1
+			;;
+
+		--rf1 )
+			shift
+			rf1=1
+			;;
+
+		--rf2 )
+			shift
+			rf2=1
+			;;
+
+		--rf3 )
+			shift
+			rf3=1
+			;;
+
+		-s | --save-tmp )
+			shift
+			save_tmp=1
+			;;
+
+		-v | --verbose )
+			shift
+			verbose=1
+			;;
+
+		* )
+			if [[ "${source_file}" != "" ]] ; then
+
+				echo ""                                                          >&2
+				echo "ERROR: too many arguments"                                 >&2
+				echo ""                                                          >&2
+				exit 1
+			else
+				source_file=$1
+				shift
+			fi
+			;;
+
+		esac
+done
+
+
+if [[ (${help} == 1) ]] ; then
+	usage
+	exit 1
+fi
+
+
+# default rf2 enabled if no report specified
+
+if [[ ${rf0} -eq 0 ]] && [[ ${rf1} -eq 0 ]] ; then
+	rf2=1
+fi
+
+#_______________________________________________________________________________
+
+
+error=0
+
+if [[ ! -f ${source_file} || ! -r ${source_file} ]] ; then
+	echo  ""                                                                  >&2
+	echo  "ERROR: file '${source_file}' is not a readable regular file"       >&2
+
+	error=1
+fi
+
+# strip off suffixes: .c, .S, .dts
+
+source_base=${source_file}
+source_base=${source_base%.c}
+source_base=${source_base%.S}
+source_base=${source_base%.dts}
+
+# start with source_file, remove path, remove leading '/.'
+source_suffix=${source_file}
+source_suffix=${source_suffix/${source_base}//}
+source_suffix=${source_suffix:2}
+
+if [[ "${source_suffix}" == "dts" ]] ; then
+	compiler_dtc=1
+else
+	compiler_dtc=0
+fi
+
+if [[ ${error} -ne 0 ]] ; then
+	echo  ""                                                                  >&2
+	exit 1
+fi
+
+
+#_______________________________________________________________________________
+
+
+if [[ "${data_dir}" != "" ]] ; then
+	path_warn=${data_dir}
+	save_tmp=1
+else
+	path_warn=`mktemp --tmpdir -d warn_check.XXXXXXXXXX`
+fi
+
+if [[ ! -d ${path_warn} ]] ; then
+	echo  ""                                                                  >&2
+	echo  "ERROR: failed to create temporary work directory"                  >&2
+	echo  ""                                                                  >&2
+
+	exit 2
+fi
+
+# convert '/' to '--' (all instances)
+warn_base=`echo ${source_base//\//--}`
+
+if [[ ${compiler_dtc} -eq 1 ]] ; then
+
+	# make xxx.dtb
+	# the target does not include the full path, unlike a .o target
+
+	target_o="${source_base}.dtb"
+
+	# file to remove is prefixed with full path
+	object_file="${KBUILD_OUTPUT}/${target_o}"
+
+	# object to build, strip off the leading path
+	target_o="${target_o##*/}"
+
+else
+
+	target_o="${source_base}.o"
+
+	if [[ "${KBUILD_OUTPUT}" != "" ]] ; then
+		object_file="${KBUILD_OUTPUT}/${target_o}"
+	else
+		object_file="${target_o}"
+	fi
+
+fi
+
+
+#_______________________________________________________________________________
+
+echo "data_dir: ${data_dir}"
+if [[ "${data_dir}" == "" ]] ; then
+
+	if [[ ${verbose} -ne 0 ]] ; then
+		echo "INFO: warning files will be created in ${path_warn}"             >&2
+	fi
+
+
+	# Try building the object file.
+	#
+	# - If it already exists, make will do nothing.
+	#
+	# - If it does not exist and fails to make, then attempts to build for
+	#   various values of "W=" will not succeed.  The failure to build may
+	#   be for one of many reasons, including missing the required CONFIG_*
+	#   option.
+	#
+	# If the object file builds because of a git checkout, then other files
+	# may also be stale and thus build.  Doing so at this point prevents
+	# any warnings from these other files being included in the warning file
+	# when that the object file is built with various "W=" values later in
+	# this script.
+
+	if [[ ${verbose} -ne 0 ]] ; then
+		echo "INFO: file '${object_file}' did not exist, creating it"          >&2
+	fi
+
+	make ${target_o} 1>/dev/null 2>/dev/null
+
+	if [[ ! -f ${object_file} || ! -r ${object_file} ]] ; then
+
+		echo  ""                                                               >&2
+		echo  "ERROR: file '${object_file}' did not exist and unable to"       >&2
+		echo  "       build ${target_o}"                                       >&2
+		echo  ""                                                               >&2
+
+		exit 3
+	fi
+
+
+
+	# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+	if [[ ${verbose} -ne 0 ]] ; then
+		echo "INFO: creating warning files for old version of source"          >&2
+	fi
+
+
+	# create header in warnings files:
+	#   - name of source file
+	#   - git version
+
+	echo "${source_file}"  >${path_warn}/${warn_base}_info_old
+	git log -n1 --oneline >>${path_warn}/${warn_base}_info_old
+	echo ""               >>${path_warn}/${warn_base}_info_old
+
+
+	if [[ ${verbose} -ne 0 ]] ; then
+		echo "INFO: W=0"                                                       >&2
+	fi
+
+	rm ${object_file}
+	make     ${target_o} 1>/dev/null 2>/dev/null
+	rm ${object_file}
+	make     ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}_w0_old
+
+	if [[ ${verbose} -ne 0 ]] ; then
+		echo "INFO: W=1"                                                       >&2
+	fi
+
+	rm ${object_file}
+	make W=1 ${target_o} 1>/dev/null 2>/dev/null
+	rm ${object_file}
+	make W=1 ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}_w1_old
+
+	if [[ ${verbose} -ne 0 ]] ; then
+		echo "INFO: W=2"                                                       >&2
+	fi
+
+	rm ${object_file}
+	make W=2 ${target_o} 1>/dev/null 2>/dev/null
+	rm ${object_file}
+	make W=2 ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}_w2_old
+
+	if [[ ${verbose} -ne 0 ]] ; then
+		echo "INFO: W=3"                                                       >&2
+	fi
+
+	rm ${object_file}
+	make W=3 ${target_o} 1>/dev/null 2>/dev/null
+	rm ${object_file}
+	make W=3 ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}_w3_old
+
+
+	# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+	echo ""
+	echo ""
+	echo "Apply file changes to create new version (eg 'git checkout' new version)"
+	echo ""
+	echo -n "At post-change version?  "
+	yes_no=""
+	while [[ "${yes_no}" != "yes" && "${yes_no}" != "no" ]] ; do
+
+		read -p "Continue (yes/no)? " yes_no
+
+		if [[ "${yes_no}" == "yes" ]]; then
+			echo ""
+			echo " continuing"
+			echo ""
+		elif [[ "${yes_no}" == "no" ]]; then
+			echo ""
+			echo " aborting"
+			echo ""
+
+			clean_up_for_exit
+			exit 1
+		fi
+
+	done
+
+
+	# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+	if [[ ${verbose} -ne 0 ]] ; then
+		echo "INFO: creating warning files for new version of source"          >&2
+	fi
+
+
+	# create header in warnings files:
+	#   - name of source file
+	#   - git version
+	#
+	# *** side effect: warning files are created, any previous content deleted
+
+	echo "${source_file}"  >${path_warn}/${warn_base}_info_new
+	git log -n1 --oneline >>${path_warn}/${warn_base}_info_new
+	echo ""               >>${path_warn}/${warn_base}_info_new
+
+
+
+	# Try building the object file.
+	#
+	# - If it already exists, make will do nothing.
+	#
+	# If the object file builds because of a git checkout, then other files
+	# may also be stale and thus build.  Doing so at this point prevents
+	# any warnings from these other files being included in the warning file
+	# when that the object file is built with various "W=" values later in
+	# this script.
+
+	make ${object_file} 1>/dev/null 2>/dev/null
+
+
+	if [[ ${verbose} -ne 0 ]] ; then
+		echo "INFO: W=0"                                                       >&2
+	fi
+
+	rm ${object_file}
+	make     ${target_o} 1>/dev/null 2>/dev/null
+	rm ${object_file}
+	make     ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}_w0_new
+
+	if [[ ${verbose} -ne 0 ]] ; then
+		echo "INFO: W=1"                                                       >&2
+	fi
+
+	rm ${object_file}
+	make W=1 ${target_o} 1>/dev/null 2>/dev/null
+	rm ${object_file}
+	make W=1 ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}_w1_new
+
+	if [[ ${verbose} -ne 0 ]] ; then
+		echo "INFO: W=2"                                                       >&2
+	fi
+
+	rm ${object_file}
+	make W=2 ${target_o} 1>/dev/null 2>/dev/null
+	rm ${object_file}
+	make W=2 ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}_w2_new
+
+	if [[ ${verbose} -ne 0 ]] ; then
+		echo "INFO: W=3"                                                       >&2
+	fi
+
+	rm ${object_file}
+	make W=3 ${target_o} 1>/dev/null 2>/dev/null
+	rm ${object_file}
+	make W=3 ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}_w3_new
+
+
+	# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+	# At each filter level, add in more filters.
+	#
+	# A lower numbered level may show more previously existing warnings.
+	#
+	# A higher numbered level may suppress more new warnings.
+
+	if [[ ${verbose} -ne 0 ]] ; then
+		echo "INFO: applying filters"                                          >&2
+	fi
+
+	for k in `seq 0 3`; do
+
+		# -----  create the filtered warning files
+
+		warn_filter --f-root-path                             \
+			${path_warn}/${warn_base}_w${k}_old                \
+			>${path_warn}/${warn_base}_w${k}_old_filter_0
+
+		warn_filter --f-root-path                             \
+			${path_warn}/${warn_base}_w${k}_new                \
+			>${path_warn}/${warn_base}_w${k}_new_filter_0
+
+
+		warn_filter --f-root-path --f-src-num                 \
+			${path_warn}/${warn_base}_w${k}_old                \
+			>${path_warn}/${warn_base}_w${k}_old_filter_1
+
+		warn_filter --f-root-path --f-src-num                 \
+			${path_warn}/${warn_base}_w${k}_new                \
+			>${path_warn}/${warn_base}_w${k}_new_filter_1
+
+
+		warn_filter --f-root-path --f-src-num --f-str-num-def \
+			${path_warn}/${warn_base}_w${k}_old                \
+			>${path_warn}/${warn_base}_w${k}_old_filter_2
+
+		warn_filter --f-root-path --f-src-num --f-str-num-def \
+			${path_warn}/${warn_base}_w${k}_new                \
+			>${path_warn}/${warn_base}_w${k}_new_filter_2
+
+
+		# -----  create the warning diff files
+
+		diff -u                                          \
+			${path_warn}/${warn_base}_w${k}_old_filter_0  \
+			${path_warn}/${warn_base}_w${k}_new_filter_0  \
+			>${path_warn}/${warn_base}_w${k}_diff_filter_0
+
+		diff -u                                          \
+			${path_warn}/${warn_base}_w${k}_old_filter_1  \
+			${path_warn}/${warn_base}_w${k}_new_filter_1  \
+			>${path_warn}/${warn_base}_w${k}_diff_filter_1
+
+		diff -u                                          \
+			${path_warn}/${warn_base}_w${k}_old_filter_2  \
+			${path_warn}/${warn_base}_w${k}_new_filter_2  \
+			>${path_warn}/${warn_base}_w${k}_diff_filter_2
+
+	done
+
+fi
+
+
+#_______________________________________________________________________________
+
+if [[ ${verbose} -ne 0 ]] ; then
+	echo "INFO: report results"                                               >&2
+fi
+
+
+# tail strips off the file name and line numbers from the diff
+echo ""
+diff -u                                \
+	${path_warn}/${warn_base}_info_old  \
+	${path_warn}/${warn_base}_info_new  \
+	| tail -n -4
+
+
+
+if [[ $rf0 -eq 1 ]] ; then
+
+	for k in `seq 0 3`; do
+
+		# -----  report the results
+
+		# TODO: this is reporting only the most filtered version of
+		#       the warnings.  Add options to report other filter levels
+
+		echo ""
+		echo "==========  W=${k}  =========="
+		echo ""
+		warn_unfilter                                    \
+			${path_warn}/${warn_base}_w${k}_diff_filter_0 \
+			${path_warn}/${warn_base}_w${k}_old_filter_0  \
+			${path_warn}/${warn_base}_w${k}_new_filter_0
+
+	done
+
+fi
+
+
+# zzz TODO: add the $rf0 and $rf3 reports
+
+if [[ $rf1 -eq 1 ]] ; then
+
+	# zzz TODO: add the full set of reports, as in $rf2
+
+	for k in `seq 0 3`; do
+
+		# -----  report the results
+
+		# TODO: this is reporting only the most filtered version of
+		#       the warnings.  Add options to report other filter levels
+
+		echo ""
+		echo "==========  W=${k}  =========="
+		echo ""
+		warn_unfilter                                    \
+			${path_warn}/${warn_base}_w${k}_diff_filter_1 \
+			${path_warn}/${warn_base}_w${k}_old_filter_0  \
+			${path_warn}/${warn_base}_w${k}_new_filter_0
+
+	done
+
+fi
+
+
+if [[ $rf2 -eq 1 ]] ; then
+
+	# -----  number of lines in warning reports
+
+	echo ""
+	echo "===============  Number of lines in warning reports"
+
+	for k in 0 1 2 3 ; do
+
+		echo ""
+		echo "=====  W=${k}"
+
+		echo -n "OLD: "
+		wc -l ${path_warn}/${warn_base}_w${k}_old_filter_2    | cut -d" " -f1
+		echo -n "NEW: "
+		wc -l ${path_warn}/${warn_base}_w${k}_new_filter_2    | cut -d" " -f1
+
+	done
+
+
+	# -----  count of each type of warning
+
+	echo ""
+	echo "===============  Count of each type of warning"
+
+	for k in 0 1 2 3 ; do
+		
+		echo ""
+		echo "=====  W=${k}"
+
+		if [[ ${compiler_dtc} -eq 1 ]] ; then
+
+			cat ${path_warn}/${warn_base}_w${k}_old_filter_2 \
+				| grep "Warning ("                            \
+				| cut -f 2 -d"("                              \
+				| cut -f 1 -d")"                              \
+				| sort | uniq -c                              \
+				| sort -nr                                    \
+				> ${path_warn}/${warn_base}_w${k}_old_warning_by_type_filter_2
+
+			cat ${path_warn}/${warn_base}_w${k}_new_filter_2 \
+				| grep "Warning ("                            \
+				| cut -f 2 -d"("                              \
+				| cut -f 1 -d")"                              \
+				| sort | uniq -c                              \
+				| sort -nr                                    \
+				> ${path_warn}/${warn_base}_w${k}_new_warning_by_type_filter_2
+
+
+		else
+
+			cat ${path_warn}/${warn_base}_w${k}_old_filter_2 \
+				| grep "\[-W"                                 \
+				| cut -f 2 -d"["                              \
+				| cut -f 1 -d"]"                              \
+				| sort | uniq -c                              \
+				| sort -nr                                    \
+				> ${path_warn}/${warn_base}_w${k}_old_warning_by_type_filter_2
+
+			cat ${path_warn}/${warn_base}_w${k}_new_filter_2 \
+				| grep "\[-W"                                 \
+				| cut -f 2 -d"["                              \
+				| cut -f 1 -d"]"                              \
+				| sort | uniq -c                              \
+				| sort -nr                                    \
+				> ${path_warn}/${warn_base}_w${k}_new_warning_by_type_filter_2
+
+		fi
+
+		# echo ""
+		# echo "OLD:"
+		# cat ${path_warn}/${warn_base}_w${k}_old_warning_by_type_filter_2
+		# echo ""
+		# echo "NEW:"
+		# cat ${path_warn}/${warn_base}_w${k}_new_warning_by_type_filter_2
+
+		warn_count_by_type                                              \
+			${path_warn}/${warn_base}_w${k}_old_warning_by_type_filter_2 \
+			${path_warn}/${warn_base}_w${k}_new_warning_by_type_filter_2
+
+	done
+
+
+	echo ""
+	echo "===============  diff of warning reports"
+
+	for k in `seq 0 3`; do
+
+		# -----  report the results
+
+		# TODO: this is reporting only the most filtered version of
+		#       the warnings.  Add options to report other filter levels
+
+		echo ""
+		echo "==========  W=${k}  =========="
+		echo ""
+		warn_unfilter                                    \
+			${path_warn}/${warn_base}_w${k}_diff_filter_2 \
+			${path_warn}/${warn_base}_w${k}_old_filter_0  \
+			${path_warn}/${warn_base}_w${k}_new_filter_0
+
+	done
+
+fi
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+clean_up_for_exit
+
+
+#===============================================================================
+#_______________________________________________________________________________
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+#* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+#* _________________________________________________________________________ */
+#* vi config follows: */
+
+#* ~/.exrc must contain "set modelines" for tabs to be set automatically */
+#* ex:set tabstop=3 shiftwidth=3 sts=3: */ 

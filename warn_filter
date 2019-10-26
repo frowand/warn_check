@@ -1,0 +1,192 @@
+#!/usr/bin/perl
+# SPDX-License-Identifier: GPL-2.0
+#
+# Author: Frank Rowand
+
+# TODO
+#
+# - filter option to hide rename of header file and movement of content
+#   between header files:
+#   "s|.*\.[chs]:[0-9]*:[0-9]*:*||"
+
+
+$VUFX = "191025a";
+
+
+use strict 'refs';
+use strict subs;
+
+use Getopt::Long;
+use Text::Wrap;
+
+
+# strip off everything before final "/"
+(undef, $script_name) = split(/^.*\//, $0);
+
+
+#______________________________________________________________________________
+sub usage {
+
+# ***** when editing, be careful to not put tabs in the string printed:
+
+	print STDERR
+"
+
+usage:
+
+  $script_name [file[...]]
+
+    --f-all-num           filter out all numbers
+    --f-root-path         filter out path of root of Linux source tree
+    --f-src-num           filter out all source file line numbers
+    --f-str-num-def STR   filter out all numbers immediately follow STR
+     -h                   print program usage
+    --help                print program usage
+    --version             print program version and exit
+
+
+  Strip strings from file, based on enabled filters.  Diffing the warnings
+  from compiling an old version of a file vs compiling a new version of a
+  file may report old warnings disappear and new warnings appear, when the
+  warning did not change but the exact warning text may differ due to a
+  changed line number of the source line that triggered the warning.  This
+  script provides some heuristics to strip the strings that reflect
+  insignificant changes.
+
+";
+
+	return {};
+}
+
+#______________________________________________________________________________
+#______________________________________________________________________________
+
+# save for usage()
+
+# add additional defaults in comma list, eg
+# @f_str_num_def = ("__compiletime_assert_", "another_default_");
+@f_str_num_def = ("__compiletime_assert_");
+
+
+if (!GetOptions(
+	"f-all-num"       => \$f_all_num,
+	"f-root-path"     => \$f_root_path,
+	"f-src-num"       => \$f_src_num,
+	"f-str-num=s"     => \@f_str_num,
+	"f-str-num-def"   => \$f_str_num_def,
+	"h"               => \$help,
+	"help"            => \$help,
+	"version"         => \$version,
+	)) {
+	print STDERR "\n";
+	print STDERR "ERROR processing command line options\n";
+	print STDERR "\n";
+	print STDERR "For help, type '$script_name --help'\n";
+	print STDERR "\n";
+
+	exit 1;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+if ($f_str_num_def) {
+	foreach $def (@f_str_num_def) {
+		push @f_str_num, $def;
+	}
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+if ($help){
+
+	&usage;
+
+	exit 1;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+if ($version) {
+	print STDERR "\n$script_name  $VUFX\n\n";
+	print STDERR "\n";
+
+	exit 0;
+}
+
+
+#______________________________________________________________________________
+
+
+# $debug = 1;
+if ($debug) {
+
+	if ($f_all_num) {
+		print "f_all_num enabled\n";
+	}
+
+	if ($f_src_num) {
+		print "f_src_num enabled\n";
+	}
+
+	if (@f_str_num) {
+		print "f_str_num:\n";
+		foreach $f_str_num (@f_str_num) {
+			print "   $f_str_num\n";
+		}
+	}
+
+}
+
+
+if ($f_root_path) {
+	$root_path = `get_CURDIR`;
+	chomp($root_path);
+	if ($root_path eq "") {
+		undef $f_root_path;
+	}
+}
+
+LINE:
+while ($line = <ARGV>) {
+
+	# chomp $line;
+
+	if ($f_root_path) {
+		$line =~ s|${root_path}/||g;
+	}
+
+	if ($f_all_num) {
+		$line =~ s/[0-9]//g;
+	}
+
+	if ($f_src_num) {
+		$line =~ s/\.c:[0-9]*/\.c:/g;
+		$line =~ s/\.h:[0-9]*/\.h:/g;
+		$line =~ s/\.s:[0-9]*/\.s:/g;
+		$line =~ s/\.dts:[0-9]*/\.dts:/g;
+		$line =~ s/\.dtsi:[0-9]*/\.dtsi:/g;
+	}
+
+	if (@f_str_num) {
+		foreach $pattern (@f_str_num) {
+			$line =~ s/${pattern}[0-9]*/${pattern}/g;
+		}
+	}
+
+
+	print $line;
+
+}
+
+
+
+
+
+#______________________________________________________________________________
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+#_______________________________________________________________________________
+# vi config follows:
+
+# ~/.exrc must contain "set modelines" for tabs to be set automatically
+# ex:set tabstop=3 shiftwidth=3 sts=0:

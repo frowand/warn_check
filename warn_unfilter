@@ -1,0 +1,172 @@
+#!/usr/bin/perl
+# SPDX-License-Identifier: GPL-2.0
+#
+# Author: Frank Rowand
+
+
+$VUFX = "191025a";
+
+
+use strict 'refs';
+use strict subs;
+
+use Getopt::Long;
+use Text::Wrap;
+
+
+# strip off everything before final "/"
+(undef, $script_name) = split(/^.*\//, $0);
+
+
+#______________________________________________________________________________
+sub usage {
+
+# ***** when editing, be careful to not put tabs in the string printed:
+
+# zzz  update for all options
+	print STDERR
+"
+
+usage:
+
+  $script_name [file[...]]
+
+    -h                print program usage
+    -help             print program usage
+    -version          print program version and exit
+
+
+  Paste two files side by side in fixed width columns, trailing spaces
+  added to first file as needed.
+
+
+";
+
+	return {};
+}
+
+#______________________________________________________________________________
+#______________________________________________________________________________
+
+# save for usage()
+
+if (!GetOptions(
+	"h"               => \$help,
+	"help"            => \$help,
+	"version"         => \$version,
+	)) {
+	print STDERR "\n";
+	print STDERR "ERROR processing command line options\n";
+	print STDERR "\n";
+	print STDERR "For help, type '$script_name --help'\n";
+	print STDERR "\n";
+
+	exit 1;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+if ($help){
+
+	&usage;
+
+	exit 1;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+if ($version) {
+	print STDERR "\n$script_name  $VUFX\n\n";
+	print STDERR "\n";
+
+	exit 0;
+}
+
+
+#______________________________________________________________________________
+
+
+# $debug = 1;
+
+if ($#ARGV != 2) {
+	print STDERR "\n";
+	print STDERR "Required arguments: three file names\n";
+	print STDERR "\n";
+
+	exit 0;
+}
+
+
+@filtered  = `cat $ARGV[0]`;
+@old_warns = `cat $ARGV[1]`;
+@new_warns = `cat $ARGV[2]`;
+
+
+
+
+# +1 because read_ahead_index is incremented after use, but before the
+# while() test of its value
+$filtered_limit = $#filtered + 1;
+$filtered_count = 0;
+
+foreach $line (@filtered) {
+
+	if ($line =~ /^@@ \-([0-9]+),([0-9]+) \+([0-9]+),([0-9]+) @@$/) {
+		$old_line  = $1;
+		$old_count = $2;
+		$new_line  = $3;
+		$new_count = $4;
+
+		if ($debug) {
+			print "(2) $line\n";
+			print "  old: line $old_line  count $old_count\n";
+			print "  new: line $new_line  count $new_count\n";
+		}
+
+		print "\n";
+		print "# ", '-' x 70, "\n";
+
+		print "\n#####  filtered  #####\n\n";
+		print "$line";
+
+		print "filtered max $#filtered\n";
+		$read_ahead_index = $filtered_count;
+		$read_ahead_line = @filtered[++$read_ahead_index];
+		while ($read_ahead_index <= $filtered_limit &&
+				 $read_ahead_line !~ /^@@ \-([0-9]+),([0-9]+) \+([0-9]+),([0-9]+) @@$/) {
+			print "$read_ahead_line";
+			$read_ahead_line = @filtered[++$read_ahead_index];
+		}
+
+		print "\n<<<<<  old  <<<<<\n\n";
+		$k = $old_line - 1;
+		for ($count = 0; $count < $old_count; $count++) {
+			print "@old_warns[$k]";
+			$k++;
+		}
+
+		print "\n>>>>>  new  >>>>>\n\n";
+		$k = $new_line - 1;
+		for ($count = 0; $count < $new_count; $count++) {
+			print "@new_warns[$k]";
+			$k++;
+		}
+	}
+
+
+	$filtered_count++;
+
+}
+
+
+
+
+
+#______________________________________________________________________________
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+#_______________________________________________________________________________
+# vi config follows:
+
+# ~/.exrc must contain "set modelines" for tabs to be set automatically
+# ex:set tabstop=3 shiftwidth=3 sts=0:

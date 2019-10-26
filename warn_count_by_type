@@ -1,0 +1,166 @@
+#!/usr/bin/perl
+# SPDX-License-Identifier: GPL-2.0
+#
+# Author: Frank Rowand
+
+
+$VUFX = "191025a";
+
+
+use strict 'refs';
+use strict subs;
+
+use Getopt::Long;
+use Text::Wrap;
+
+
+# strip off everything before final "/"
+(undef, $script_name) = split(/^.*\//, $0);
+
+
+#______________________________________________________________________________
+sub usage {
+
+# ***** when editing, be careful to not put tabs in the string printed:
+
+	print STDERR
+"
+
+usage:
+
+  $script_name WARN_BY_TYPE_FILE_OLD WARN_BY_TYPE_FILE_NEW
+
+    -h                print program usage
+    -help             print program usage
+    -version          print program version and exit
+
+
+  Combine two warn count by type files into a single report.
+  Each line reports the count for OLD and NEW.
+
+
+";
+
+	return {};
+}
+
+#______________________________________________________________________________
+#______________________________________________________________________________
+
+# save for usage()
+
+if (!GetOptions(
+	"h"               => \$help,
+	"help"            => \$help,
+	"version"         => \$version,
+	)) {
+	print STDERR "\n";
+	print STDERR "ERROR processing command line options\n";
+	print STDERR "\n";
+	print STDERR "For help, type '$script_name --help'\n";
+	print STDERR "\n";
+
+	exit 1;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+if ($help){
+
+	&usage;
+
+	exit 1;
+}
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+if ($version) {
+	print STDERR "\n$script_name  $VUFX\n\n";
+	print STDERR "\n";
+
+	exit 0;
+}
+
+
+#______________________________________________________________________________
+
+
+# $debug = 1;
+
+if ($#ARGV != 1) {
+	print STDERR "\n";
+	print STDERR "Required arguments: two file names\n";
+	print STDERR "\n";
+
+	exit 0;
+}
+
+
+$filename_old = $ARGV[0];
+$filename_new = $ARGV[1];
+
+@warn_by_type_old = `cat $filename_old`;
+@warn_by_type_new = `cat $filename_new`;
+
+
+foreach $line (@warn_by_type_old) {
+
+	$line =~ s/^\s*//;
+	($count, $name) = split /\s+/, $line;
+
+	if (exists($name_count_old{$name})) {
+		print STDERR "\n";
+		print STDERR "ERROR multiple lines report count for error '$name' in\n";
+		print STDERR "      file $filename_old\n";
+		print STDERR "\n";
+		exit 1;
+
+	}
+	$warn_name_count_old{$name} = $count;
+	$warn_name_count_all{$name} = 1;
+}
+
+foreach $line (@warn_by_type_new) {
+
+	$line =~ s/^\s*//;
+	($count, $name) = split /\s+/, $line;
+
+	if (exists($warn_name_count_new{$name})) {
+		print STDERR "\n";
+		print STDERR "ERROR multiple lines report count for error '$name' in\n";
+		print STDERR "      file $filename_new\n";
+		print STDERR "\n";
+		exit 1;
+
+	}
+	$warn_name_count_new{$name} = $count;
+	$warn_name_count_all{$name} = 1;
+}
+
+
+printf "\n";
+printf "%5s %5s\n", "old", "new";
+printf "%5s %5s\n", "-" x 5, "-" x 5;
+
+foreach $name (sort keys %warn_name_count_all) {
+
+	if (! exists($warn_name_count_old{$name})) {
+		$warn_name_count_old{$name} = 0;
+	} elsif (! exists($warn_name_count_new{$name})) {
+		$warn_name_count_new{$name} = 0;
+	}
+
+	printf "%5s %5s %1s %-0s\n",
+		$warn_name_count_old{$name}, $warn_name_count_new{$name},
+		($warn_name_count_old{$name} == $warn_name_count_new{$name} ? "" : "*"),
+		$name;
+}
+
+#______________________________________________________________________________
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+#_______________________________________________________________________________
+# vi config follows:
+
+# ~/.exrc must contain "set modelines" for tabs to be set automatically
+# ex:set tabstop=3 shiftwidth=3 sts=0:

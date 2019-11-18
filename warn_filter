@@ -1,6 +1,8 @@
 #!/usr/bin/perl
 # SPDX-License-Identifier: GPL-2.0
 #
+# Copyright 2019 Sony Corporation
+#
 # Author: Frank Rowand
 
 # TODO
@@ -10,7 +12,7 @@
 #   "s|.*\.[chs]:[0-9]*:[0-9]*:*||"
 
 
-$VUFX = "191025a";
+$VUFX = "191118a";
 
 
 use strict 'refs';
@@ -43,6 +45,10 @@ usage:
      -h                   print program usage
     --help                print program usage
     --version             print program version and exit
+    --wf0                 filter level 0
+    --wf1                 filter level 1
+    --wf2                 filter level 2
+    --wf3                 filter level 3
 
 
   Strip strings from file, based on enabled filters.  Diffing the warnings
@@ -53,6 +59,26 @@ usage:
   script provides some heuristics to strip the strings that reflect
   insignificant changes.
 
+  --wf* is a convenient way to specify a group of filters.  A higher number
+  implies more filtering for 0..3.
+
+  --wf0:
+	  --f-root-path
+
+  --wf1:
+	  --f-root-path
+	  --f-src-num
+
+  --wf2:
+	  --f-root-path
+	  --f-src-num
+	  --f-str-num-def
+
+  --wf3:
+	  --f-root-path
+	  --f-src-num
+	  --f-str-num-def
+	  --f-all-num
 ";
 
 	return {};
@@ -74,6 +100,10 @@ if (!GetOptions(
 	"f-src-num"       => \$f_src_num,
 	"f-str-num=s"     => \@f_str_num,
 	"f-str-num-def"   => \$f_str_num_def,
+	"wf0"             => \$wf_0,
+	"wf1"             => \$wf_1,
+	"wf2"             => \$wf_2,
+	"wf3"             => \$wf_3,
 	"h"               => \$help,
 	"help"            => \$help,
 	"version"         => \$version,
@@ -85,6 +115,29 @@ if (!GetOptions(
 	print STDERR "\n";
 
 	exit 1;
+}
+
+
+if ($wf_0) {
+	$f_root_path = 1;
+}
+
+if ($wf_1) {
+	$f_root_path = 1;
+	$f_src_num   = 1;
+}
+
+if ($wf_2) {
+	$f_root_path   = 1;
+	$f_src_num     = 1;
+	$f_str_num_def = 1;
+}
+
+if ($wf_3) {
+	$f_root_path   = 1;
+	$f_src_num     = 1;
+	$f_str_num_def = 1;
+	$f_all_num     = 1;
 }
 
 

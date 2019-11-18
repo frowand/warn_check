@@ -4,7 +4,7 @@
 # Author: Frank Rowand
 
 
-$VUFX = "191025a";
+$VUFX = "191118a";
 
 
 use strict 'refs';
@@ -107,7 +107,10 @@ $filename_new = $ARGV[1];
 foreach $line (@warn_by_type_old) {
 
 	$line =~ s/^\s*//;
-	($count, $name) = split /\s+/, $line;
+	chomp($line);
+	($count) = split /\s+/, $line;
+	$name = $line;
+	$name =~ s/[0-9]*\s+//;
 
 	if (exists($name_count_old{$name})) {
 		print STDERR "\n";
@@ -124,7 +127,10 @@ foreach $line (@warn_by_type_old) {
 foreach $line (@warn_by_type_new) {
 
 	$line =~ s/^\s*//;
-	($count, $name) = split /\s+/, $line;
+	chomp($line);
+	($count) = split /\s+/, $line;
+	$name = $line;
+	$name =~ s/[0-9]*\s+//;
 
 	if (exists($warn_name_count_new{$name})) {
 		print STDERR "\n";

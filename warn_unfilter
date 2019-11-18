@@ -1,10 +1,12 @@
 #!/usr/bin/perl
 # SPDX-License-Identifier: GPL-2.0
 #
+# Copyright 2019 Sony Corporation
+#
 # Author: Frank Rowand
 
 
-$VUFX = "191025a";
+$VUFX = "191118a";
 
 
 use strict 'refs';
@@ -23,22 +25,19 @@ sub usage {
 
 # ***** when editing, be careful to not put tabs in the string printed:
 
-# zzz  update for all options
 	print STDERR
 "
 
 usage:
 
-  $script_name [file[...]]
+  $script_name FILTERED_DIFF_FILE OLD_FILE_WITH_NUMBERS NEW_FILE_WITH_NUMBERS
 
     -h                print program usage
     -help             print program usage
     -version          print program version and exit
 
 
-  Paste two files side by side in fixed width columns, trailing spaces
-  added to first file as needed.
-
+  Add back line number context to a diff of two 'warn_filter' files.
 
 ";
 
@@ -112,11 +111,29 @@ $filtered_count = 0;
 
 foreach $line (@filtered) {
 
-	if ($line =~ /^@@ \-([0-9]+),([0-9]+) \+([0-9]+),([0-9]+) @@$/) {
-		$old_line  = $1;
-		$old_count = $2;
-		$new_line  = $3;
-		$new_count = $4;
+	# line block descripter can be either of:
+	#   [+-]line,count
+	#   [+-]count
+
+	if ($line =~ /^@@ \-([0-9]+)(,|)([0-9]+|) \+([0-9]+)(,|)([0-9]+|) @@$/) {
+		$comma_old = $2;
+		$comma_new = $5;
+
+		if ($comma_old eq ",") {
+			$old_line  = $1;
+			$old_count = $3;
+		} else {
+			$old_line  = 0;
+			$old_count = $1;
+		}
+
+		if ($comma_new eq ",") {
+			$new_line  = $4;
+			$new_count = $6;
+		} else {
+			$new_line  = 0;
+			$new_count = $4;
+		}
 
 		if ($debug) {
 			print "(2) $line\n";
@@ -125,12 +142,11 @@ foreach $line (@filtered) {
 		}
 
 		print "\n";
-		print "# ", '-' x 70, "\n";
+		print '-' x 80, "\n";
 
 		print "\n#####  filtered  #####\n\n";
 		print "$line";
 
-		print "filtered max $#filtered\n";
 		$read_ahead_index = $filtered_count;
 		$read_ahead_line = @filtered[++$read_ahead_index];
 		while ($read_ahead_index <= $filtered_limit &&

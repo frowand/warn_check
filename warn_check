@@ -1,33 +1,21 @@
 #! /bin/bash
 # SPDX-License-Identifier: GPL-2.0
 #
+# Copyright 2019 Sony Corporation
+#
 # Author: Frank Rowand
 
 #_______________________________________________________________________________
 
 # TODO
 #
-# - KBUILD_OUTPUT is supported.  Add support for 'O='
+# - KBUILD_OUTPUT is supported.  Add support for 'O=' ???
 #
 # - git version is placed in warnings info files.  Add option to place
 #   other information in info files
 #
-# - add option to not strip off leading path from file names
-#
 # - real command line get options (or more robust error checking,
 #   eg -d requires a data item)
-#
-# - --rf0, --rf1, --rf2, --rf3 are awkward.  Change to a better syntax and
-#   implementation
-#
-# - parameter "source_file" is required even when --data-dir is specified.
-#   Remove this requirement
-#
-# - option to process multiple source files in one invocation
-#
-# - option to specify old git commit and new git commit.  Check out the old
-#   commit, process, check out the new commit, process.  Additional option
-#   to process all source files modified in old_commit..new_commit
 
 
 #_______________________________________________________________________________
@@ -53,45 +41,125 @@ cat >&2 << eod
 
 usage:
     `basename $0` -h | -help | --help
-    `basename $0` [-r | --reply] source_file
+    `basename $0` [options] SOURCE_FILE...
+    `basename $0` [options] --old-commit OLD_ID [--new-commit NEW_ID]
+    `basename $0` [options] --data-dir DIR
 
-       -d             synonym for --data-dir
+       -d DIR         synonym for --data-dir
       --data-dir DIR  use existing warnings files in DIR, do not create new
                          this will invoke --save-tmp
        -s             synonym for --save-tmp
-      --save-tmp      do not delete temp directories that contain
-                      base64 or quoted printable versions
+      --save-tmp      do not delete temp directory that contains warnings files
        -v             synonym for --verbose
       --verbose       report extra information on progress
+      --wf0           warnings filter level 0
+      --wf1           warnings filter level 1
+      --wf2           warnings filter level 2
+      --wf3           warnings filter level 3
 
-   Check source_file for different warnings in old vs new version.
-	Supports .c and .S source files.
+  Check source_file for different warnings in old vs new version.
+  Supports .c, .dts and .S source files.
 
-	Ensure that the old version of source_file is present when this
-	script is executed.  After collecting warnings for the old version,
-	you will be prompted to apply file changes to create the new version
-	(eg 'git checkout' new version).
+  Warnings are reported separately for:
 
-	Path of source_file is relative to the root of the Linux kernel
-	source tree.
+    make W=0
+    make W=1
+    make W=2
+    make W=3
+    make C=2
 
-	This script must be run from the root of the Linux kernel source
-	tree.
+    If 'sparse' is not in \$PATH then 'make C=2' will not occur.
+
+  --wf<num> options define the level of filtering applied to the
+  warning messages before diffing the messages.  See warn_filter
+  for more details on the meaning of each filter level.
+
+  --wf<num> options are independent; more than one may be specified.
+  One set of reports is generated for each --wf<num> value.
+
+  There are two ways to establish old and new versions:
+
+    (1) Ensure that the old version of source_file is present when this
+        script is executed.  After collecting warnings for the old version,
+        the script will pause and you will be prompted to apply file changes
+        to create the new version (eg 'git checkout' new version, use quilt
+        to apply patch(es), apply patch(es) by hand, or edit file(s)) before
+        continuing.
+
+    (2) Specify --old-commit OLD_ID (and optionally --new-commit NEW_ID).
+        The script will checkout git commit OLD_ID for the old version,
+        then will checkout NEW_ID for the new version.  Finally the script
+        will attempt to checkout the original branch (or commit if originally
+        on a detached head).
+
+        All files modified by OLD_ID..NEW_ID will be checked.
+
+        If the script fails or is otherwise terminated prematurely then the
+        current branch or commit will likely be left in an unexpected state.
+
+  If '--data-dir DIR' is specified, do not create the warning files.  Instead
+  use the warning files in DIR to create the reports.  DIR is created by
+  --save-tmp.  This is useful to avoid the high cost of creating the
+  warning files if you want to specify a different --wf[0-3].
+
+  Path of source_file is relative to the root of the Linux kernel
+  source tree.
+
+  This script must be run from the root of the Linux kernel source
+  tree.
+
+  This script is not fast.  The --verbose option is recommended to show
+  ongoing progress.
+
+  Messages from --verbose are sent to stderr.
 
 eod
 
 }
 
+# following /usr/include/sysexits.h
+EX_OK=0
+EX_USAGE=64
+EX_NOINPUT=66
+EX_OSERR=71
+EX_CANTCREAT=73
+EX_NOPERM=77
 
 unset data_dir
+unset new_commit
+unset old_commit
 unset save_tmp
-unset source_file
+unset source_files
+declare -a source_files
 unset verbose
 
-rf0=0
-rf1=0
-rf2=0
-rf3=0
+source_files_count=0
+wf0=0
+wf1=0
+wf2=0
+wf3=0
+
+# 0 - state at invocation
+# 1 - state at old commit
+# 2 - state at new commit
+# 3 - state at completion
+unset hist_0_branch
+unset hist_0_commit
+unset hist_1_branch
+unset hist_1_commit
+unset hist_2_branch
+unset hist_2_commit
+unset hist_3_branch
+unset hist_3_commit
+
+hist_0_branch=`git branch | grep '*' | sed -e 's|* ||'`
+hist_0_commit=`git log -n1 --oneline`
+
+if `git branch | grep -q '* (detached from '`; then
+	hist_0_detached=1
+else
+	hist_0_detached=0
+fi
 
 while [[ ($# -gt 0) ]] ; do
 
@@ -108,24 +176,36 @@ while [[ ($# -gt 0) ]] ; do
 			help=1
 			;;
 
-		--rf0 )
+		--new-commit )
 			shift
-			rf0=1
+			new_commit=$1
+			shift
 			;;
 
-		--rf1 )
+		--old-commit )
 			shift
-			rf1=1
+			old_commit=$1
+			shift
 			;;
 
-		--rf2 )
+		--wf0 )
 			shift
-			rf2=1
+			wf0=1
 			;;
 
-		--rf3 )
+		--wf1 )
 			shift
-			rf3=1
+			wf1=1
+			;;
+
+		--wf2 )
+			shift
+			wf2=1
+			;;
+
+		--wf3 )
+			shift
+			wf3=1
 			;;
 
 		-s | --save-tmp )
@@ -139,32 +219,28 @@ while [[ ($# -gt 0) ]] ; do
 			;;
 
 		* )
-			if [[ "${source_file}" != "" ]] ; then
-
-				echo ""                                                          >&2
-				echo "ERROR: too many arguments"                                 >&2
-				echo ""                                                          >&2
-				exit 1
-			else
-				source_file=$1
-				shift
-			fi
+			source_files[${source_files_count}]=$1
+			source_files_count=$(( ${source_files_count} + 1 ))
+			shift
 			;;
 
 		esac
 done
 
 
-if [[ (${help} == 1) ]] ; then
+if [[ ${help} == 1 ]] ; then
 	usage
-	exit 1
+	exit ${EX_OK}
 fi
 
 
-# default rf2 enabled if no report specified
+# default wf2 enabled if no report specified
 
-if [[ ${rf0} -eq 0 ]] && [[ ${rf1} -eq 0 ]] ; then
-	rf2=1
+if [[ ${wf0} -eq 0 ]] && \
+	[[ ${wf1} -eq 0 ]] && \
+	[[ ${wf3} -eq 0 ]]    \
+	; then
+	wf2=1
 fi
 
 #_______________________________________________________________________________
@@ -172,79 +248,123 @@ fi
 
 error=0
 
-if [[ ! -f ${source_file} || ! -r ${source_file} ]] ; then
-	echo  ""                                                                  >&2
-	echo  "ERROR: file '${source_file}' is not a readable regular file"       >&2
 
-	error=1
+if [[ "${old_commit}" != "" ]] ; then
+
+	if [[ "${#source_files[@]}" -ne 0 ]] ; then
+		echo  ""                                                               >&2
+		echo  "ERROR: can not specify both --old-commit and SOURCE_FILE"       >&2
+
+		exit ${EX_USAGE}
+	fi
+
+	unset source_files
+	source_files_count=0
+
+	for source_file in \
+		`git diff --numstat ${old_commit} ${new_commit} | cut -f3`; do
+
+		source_files[${source_files_count}]=${source_file}
+		source_files_count=$(( ${source_files_count} + 1 ))
+
+	done
+
+	if [[ "${#source_files[@]}" -eq 0 ]] ; then
+		echo  ""                                                               >&2
+		echo  "ERROR: no files found in: git diff ${old_commit} ${new_commit}" >&2
+
+		exit ${EX_NOINPUT}
+	fi
+
 fi
 
-# strip off suffixes: .c, .S, .dts
 
-source_base=${source_file}
-source_base=${source_base%.c}
-source_base=${source_base%.S}
-source_base=${source_base%.dts}
+if [[ "${data_dir}" == "" ]] ; then
 
-# start with source_file, remove path, remove leading '/.'
-source_suffix=${source_file}
-source_suffix=${source_suffix/${source_base}//}
-source_suffix=${source_suffix:2}
+	if [[ "${#source_files[@]}" -eq 0 ]] ; then
 
-if [[ "${source_suffix}" == "dts" ]] ; then
-	compiler_dtc=1
+		echo  ""                                                               >&2
+		echo  "ERROR: either SOURCE_FILE, --old-commit, or --data-dir"         >&2
+		echo  "       must be specified"                                       >&2
+
+		exit ${EX_USAGE}
+	fi
+
+	for source_file in ${source_files[@]} ; do
+		if [[ ! -f ${source_file} ]] || [[ ! -r ${source_file} ]] ; then
+			echo  ""                                                            >&2
+			echo  "ERROR: '${source_file}' is not a readable regular file"      >&2
+
+			error=1
+		fi
+	done
+
+	if [[ ${error} -ne 0 ]] ; then
+		exit ${EX_NOINPUT}
+	fi
+
 else
-	compiler_dtc=0
-fi
 
-if [[ ${error} -ne 0 ]] ; then
-	echo  ""                                                                  >&2
-	exit 1
+	if [[ "${#source_files[@]}" -ne 0 ]] ; then
+		echo  ""                                                               >&2
+		echo  "ERROR: either SOURCE_FILE or --data-dir must be specified"      >&2
+
+		exit ${EX_USAGE}
+
+	elif [[ ! -d ${data_dir} ]] ; then
+		echo  ""                                                               >&2
+		echo  "ERROR: '${data_dir}' is not a directory"                        >&2
+
+		exit ${EX_NOINPUT}
+
+	elif [[ ! -r ${data_dir} ]] ; then
+		echo  ""                                                               >&2
+		echo  "ERROR: '${data_dir}' is not readable"                           >&2
+
+		exit ${EX_NOPERM}
+	fi
+
 fi
 
 
 #_______________________________________________________________________________
-
 
 if [[ "${data_dir}" != "" ]] ; then
 	path_warn=${data_dir}
 	save_tmp=1
+	if [[ ! -d ${path_warn} ]] ; then
+		echo  ""                                                               >&2
+		echo  "ERROR: directory ${path_warn} is not a directory"               >&2
+		echo  ""                                                               >&2
+
+		exit ${EX_NOINPUT}
+	elif [[ ! -r ${path_warn} ]] ; then
+		echo  ""                                                               >&2
+		echo  "ERROR: ${path_warn} is not readable"                            >&2
+		echo  ""                                                               >&2
+
+		exit ${EX_NOPERM}
+	fi
+
 else
 	path_warn=`mktemp --tmpdir -d warn_check.XXXXXXXXXX`
-fi
 
-if [[ ! -d ${path_warn} ]] ; then
-	echo  ""                                                                  >&2
-	echo  "ERROR: failed to create temporary work directory"                  >&2
-	echo  ""                                                                  >&2
+	if [[ ! -d ${path_warn} ]] ; then
+		echo  ""                                                               >&2
+		echo  "ERROR: failed to create temporary work directory"               >&2
+		echo  ""                                                               >&2
 
-	exit 2
-fi
+		exit ${EX_CANTCREAT}
+	elif [[ ! -w ${path_warn} ]] ; then
+		echo  ""                                                               >&2
+		echo  "ERROR: unable to write to directory ${path_warn}"               >&2
+		echo  ""                                                               >&2
 
-# convert '/' to '--' (all instances)
-warn_base=`echo ${source_base//\//--}`
+		exit ${EX_NOPERM}
+	fi
 
-if [[ ${compiler_dtc} -eq 1 ]] ; then
-
-	# make xxx.dtb
-	# the target does not include the full path, unlike a .o target
-
-	target_o="${source_base}.dtb"
-
-	# file to remove is prefixed with full path
-	object_file="${KBUILD_OUTPUT}/${target_o}"
-
-	# object to build, strip off the leading path
-	target_o="${target_o##*/}"
-
-else
-
-	target_o="${source_base}.o"
-
-	if [[ "${KBUILD_OUTPUT}" != "" ]] ; then
-		object_file="${KBUILD_OUTPUT}/${target_o}"
-	else
-		object_file="${target_o}"
+	if [[ ${verbose} -ne 0 ]] ; then
+		echo "INFO: warning files will be created in ${path_warn}"             >&2
 	fi
 
 fi
@@ -252,12 +372,99 @@ fi
 
 #_______________________________________________________________________________
 
-echo "data_dir: ${data_dir}"
+if `which sparse` ; then
+	sparse_found=1
+else
+	sparse_found=0
+	echo  ""                                                                  >&2
+	echo  "WARNING: 'sparse' not found, unable to 'make C=2'"                 >&2
+	echo  ""                                                                  >&2
+fi
+
+
+#===============================================================================
+#===============================================================================
+
+##  old
+
+#===============================================================================
+#===============================================================================
+
+if [[ "${old_commit}" != "" ]] ; then
+	if [[ ${verbose} -ne 0 ]] ; then
+		echo "INFO: git checkout ${old_commit}"                                >&2
+	fi
+
+	git checkout ${old_commit}
+fi
+
+
+hist_1_branch=`git branch | grep '*' | sed -e 's|* ||'`
+hist_1_commit=`git log -n1 --oneline`
+
+
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 if [[ "${data_dir}" == "" ]] ; then
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+for source_file in ${source_files[@]} ; do
 
 	if [[ ${verbose} -ne 0 ]] ; then
-		echo "INFO: warning files will be created in ${path_warn}"             >&2
+		echo "INFO: file: ${source_file}"                                      >&2
 	fi
+
+################################################################################
+################################################################################
+
+	# strip off suffixes: .c, .S, .dts
+
+	source_base=${source_file}
+	source_base=${source_base%.c}
+	source_base=${source_base%.S}
+	source_base=${source_base%.dts}
+
+	# start with source_file, remove path, remove leading '/.'
+	source_suffix=${source_file}
+	source_suffix=${source_suffix/${source_base}//}
+	source_suffix=${source_suffix:2}
+
+	if [[ "${source_suffix}" == "dts" ]] ; then
+		compiler_dtc=1
+	else
+		compiler_dtc=0
+	fi
+
+
+	# convert '/' to '--' (all instances)
+	warn_base=`echo ${source_base//\//--}`
+
+	if [[ ${compiler_dtc} -eq 1 ]] ; then
+
+		# make xxx.dtb
+		# the target does not include the full path, unlike a .o target
+
+		target_o="${source_base}.dtb"
+
+		# file to remove is prefixed with full path
+		object_file="${KBUILD_OUTPUT}/${target_o}"
+
+		# object to build, strip off the leading path
+		target_o="${target_o##*/}"
+
+	else
+
+		target_o="${source_base}.o"
+
+		if [[ "${KBUILD_OUTPUT}" != "" ]] ; then
+			object_file="${KBUILD_OUTPUT}/${target_o}"
+		else
+			object_file="${target_o}"
+		fi
+
+	fi
+################################################################################
+################################################################################
 
 
 	# Try building the object file.
@@ -288,9 +495,9 @@ if [[ "${data_dir}" == "" ]] ; then
 		echo  "       build ${target_o}"                                       >&2
 		echo  ""                                                               >&2
 
-		exit 3
+		clean_up_for_exit
+		exit ${EX_OSERR}
 	fi
-
 
 
 	# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -303,49 +510,85 @@ if [[ "${data_dir}" == "" ]] ; then
 	#   - name of source file
 	#   - git version
 
-	echo "${source_file}"  >${path_warn}/${warn_base}_info_old
-	git log -n1 --oneline >>${path_warn}/${warn_base}_info_old
-	echo ""               >>${path_warn}/${warn_base}_info_old
+	echo "${source_file}"  >${path_warn}/${warn_base}--info_old
+	git log -n1 --oneline >>${path_warn}/${warn_base}--info_old
+	echo ""               >>${path_warn}/${warn_base}--info_old
 
 
-	if [[ ${verbose} -ne 0 ]] ; then
-		echo "INFO: W=0"                                                       >&2
+	# ----- compile, w=0..3
+
+	for w in `seq 0 3`; do
+
+		if [[ ${verbose} -ne 0 ]] ; then
+			echo "INFO: W=${w}"                                                 >&2
+		fi
+
+		rm ${object_file}
+		make W=${w} ${target_o} 1>/dev/null 2>/dev/null
+		rm ${object_file}
+		make W=${w} ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}--w${w}_old
+
+	done
+
+
+	# ----- sparse
+
+	if [[ ${sparse_found} -eq 1 ]] ; then
+
+		# C=2 forces build even if dependencies satisfied
+
+		make C=2 ${target_o} 1>/dev/null 2>/dev/null
+		make C=2 ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}--sparse_old
+
 	fi
 
-	rm ${object_file}
-	make     ${target_o} 1>/dev/null 2>/dev/null
-	rm ${object_file}
-	make     ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}_w0_old
 
-	if [[ ${verbose} -ne 0 ]] ; then
-		echo "INFO: W=1"                                                       >&2
+done
+
+
+
+
+#===============================================================================
+#===============================================================================
+
+##  new
+
+#===============================================================================
+#===============================================================================
+
+if [[ "${old_commit}" != "" ]] ; then
+
+	if [[ "${new_commit}" != "" ]] ; then
+
+		if [[ ${verbose} -ne 0 ]] ; then
+			echo "INFO: git checkout ${new_commit}"                             >&2
+		fi
+
+		git checkout ${new_commit}
+
+	else
+
+		if [[ ${hist_0_detached} -eq 1 ]] ; then
+
+			if [[ ${verbose} -ne 0 ]] ; then
+				echo "INFO: git checkout ${commit}"                              >&2
+			fi
+
+			commit=`echo ${hist_0_commit} | cut -d" " -f1`
+			git checkout ${commit}
+
+		else
+
+			if [[ ${verbose} -ne 0 ]] ; then
+				echo "INFO: git checkout ${hist_0_branch}"                       >&2
+			fi
+
+			git checkout ${hist_0_branch}
+
+		fi
 	fi
 
-	rm ${object_file}
-	make W=1 ${target_o} 1>/dev/null 2>/dev/null
-	rm ${object_file}
-	make W=1 ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}_w1_old
-
-	if [[ ${verbose} -ne 0 ]] ; then
-		echo "INFO: W=2"                                                       >&2
-	fi
-
-	rm ${object_file}
-	make W=2 ${target_o} 1>/dev/null 2>/dev/null
-	rm ${object_file}
-	make W=2 ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}_w2_old
-
-	if [[ ${verbose} -ne 0 ]] ; then
-		echo "INFO: W=3"                                                       >&2
-	fi
-
-	rm ${object_file}
-	make W=3 ${target_o} 1>/dev/null 2>/dev/null
-	rm ${object_file}
-	make W=3 ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}_w3_old
-
-
-	# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+else
 
 	echo ""
 	echo ""
@@ -367,17 +610,85 @@ if [[ "${data_dir}" == "" ]] ; then
 			echo ""
 
 			clean_up_for_exit
-			exit 1
+			exit ${EX_OK}
 		fi
 
 	done
 
+fi
 
-	# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+hist_2_branch=`git branch | grep '*' | sed -e 's|* ||'`
+hist_2_commit=`git log -n1 --oneline`
+
+
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+if [[ ${verbose} -ne 0 ]] ; then
+	echo "INFO: creating warning files for new version of source"             >&2
+fi
+
+
+for source_file in ${source_files[@]} ; do
+
 	if [[ ${verbose} -ne 0 ]] ; then
-		echo "INFO: creating warning files for new version of source"          >&2
+		echo "INFO: file: ${source_file}"                                      >&2
 	fi
 
+################################################################################
+################################################################################
+
+	# strip off suffixes: .c, .S, .dts
+
+	source_base=${source_file}
+	source_base=${source_base%.c}
+	source_base=${source_base%.S}
+	source_base=${source_base%.dts}
+
+	# start with source_file, remove path, remove leading '/.'
+	source_suffix=${source_file}
+	source_suffix=${source_suffix/${source_base}//}
+	source_suffix=${source_suffix:2}
+
+	if [[ "${source_suffix}" == "dts" ]] ; then
+		compiler_dtc=1
+	else
+		compiler_dtc=0
+	fi
+
+
+	# convert '/' to '--' (all instances)
+	warn_base=`echo ${source_base//\//--}`
+
+	if [[ ${compiler_dtc} -eq 1 ]] ; then
+
+		# make xxx.dtb
+		# the target does not include the full path, unlike a .o target
+
+		target_o="${source_base}.dtb"
+
+		# file to remove is prefixed with full path
+		object_file="${KBUILD_OUTPUT}/${target_o}"
+
+		# object to build, strip off the leading path
+		target_o="${target_o##*/}"
+
+	else
+
+		target_o="${source_base}.o"
+
+		if [[ "${KBUILD_OUTPUT}" != "" ]] ; then
+			object_file="${KBUILD_OUTPUT}/${target_o}"
+		else
+			object_file="${target_o}"
+		fi
+
+	fi
+################################################################################
+################################################################################
+
+
+	#____________________________________________________________________________
 
 	# create header in warnings files:
 	#   - name of source file
@@ -385,9 +696,9 @@ if [[ "${data_dir}" == "" ]] ; then
 	#
 	# *** side effect: warning files are created, any previous content deleted
 
-	echo "${source_file}"  >${path_warn}/${warn_base}_info_new
-	git log -n1 --oneline >>${path_warn}/${warn_base}_info_new
-	echo ""               >>${path_warn}/${warn_base}_info_new
+	echo "${source_file}"  >${path_warn}/${warn_base}--info_new
+	git log -n1 --oneline >>${path_warn}/${warn_base}--info_new
+	echo ""               >>${path_warn}/${warn_base}--info_new
 
 
 
@@ -404,41 +715,31 @@ if [[ "${data_dir}" == "" ]] ; then
 	make ${object_file} 1>/dev/null 2>/dev/null
 
 
-	if [[ ${verbose} -ne 0 ]] ; then
-		echo "INFO: W=0"                                                       >&2
+	# ----- compile, w=0..3
+
+	for w in `seq 0 3`; do
+
+		if [[ ${verbose} -ne 0 ]] ; then
+			echo "INFO: W=${w}"                                                 >&2
+		fi
+
+		rm ${object_file}
+		make W=${w} ${target_o} 1>/dev/null 2>/dev/null
+		rm ${object_file}
+		make W=${w} ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}--w${w}_new
+
+	done
+
+	# ----- sparse
+
+	if [[ ${sparse_found} -eq 1 ]] ; then
+
+		# C=2 forces build even if dependencies satisfied
+
+		make C=2 ${target_o} 1>/dev/null 2>/dev/null
+		make C=2 ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}--sparse_new
+
 	fi
-
-	rm ${object_file}
-	make     ${target_o} 1>/dev/null 2>/dev/null
-	rm ${object_file}
-	make     ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}_w0_new
-
-	if [[ ${verbose} -ne 0 ]] ; then
-		echo "INFO: W=1"                                                       >&2
-	fi
-
-	rm ${object_file}
-	make W=1 ${target_o} 1>/dev/null 2>/dev/null
-	rm ${object_file}
-	make W=1 ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}_w1_new
-
-	if [[ ${verbose} -ne 0 ]] ; then
-		echo "INFO: W=2"                                                       >&2
-	fi
-
-	rm ${object_file}
-	make W=2 ${target_o} 1>/dev/null 2>/dev/null
-	rm ${object_file}
-	make W=2 ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}_w2_new
-
-	if [[ ${verbose} -ne 0 ]] ; then
-		echo "INFO: W=3"                                                       >&2
-	fi
-
-	rm ${object_file}
-	make W=3 ${target_o} 1>/dev/null 2>/dev/null
-	rm ${object_file}
-	make W=3 ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}_w3_new
 
 
 	# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -453,230 +754,311 @@ if [[ "${data_dir}" == "" ]] ; then
 		echo "INFO: applying filters"                                          >&2
 	fi
 
-	for k in `seq 0 3`; do
+	# $w is warn level
+	# $wf is warn filter
+	for w in `seq 0 3`; do
 
-		# -----  create the filtered warning files
+		for wf in `seq 0 3` ; do
 
-		warn_filter --f-root-path                             \
-			${path_warn}/${warn_base}_w${k}_old                \
-			>${path_warn}/${warn_base}_w${k}_old_filter_0
+			# -----  create the filtered warning files
 
-		warn_filter --f-root-path                             \
-			${path_warn}/${warn_base}_w${k}_new                \
-			>${path_warn}/${warn_base}_w${k}_new_filter_0
+			warn_filter --wf${wf}                             \
+				${path_warn}/${warn_base}--w${w}_old           \
+				>${path_warn}/${warn_base}--w${w}_wf${wf}_old
 
+			warn_filter --wf${wf}                             \
+				${path_warn}/${warn_base}--w${w}_new           \
+				>${path_warn}/${warn_base}--w${w}_wf${wf}_new
 
-		warn_filter --f-root-path --f-src-num                 \
-			${path_warn}/${warn_base}_w${k}_old                \
-			>${path_warn}/${warn_base}_w${k}_old_filter_1
+			if [[ ${sparse_found} -eq 1 ]] ; then
 
-		warn_filter --f-root-path --f-src-num                 \
-			${path_warn}/${warn_base}_w${k}_new                \
-			>${path_warn}/${warn_base}_w${k}_new_filter_1
+				warn_filter --wf${wf}                             \
+					${path_warn}/${warn_base}--sparse_old          \
+					>${path_warn}/${warn_base}--sparse_wf${wf}_old
 
+				warn_filter --wf${wf}                             \
+					${path_warn}/${warn_base}--sparse_new          \
+					>${path_warn}/${warn_base}--sparse_wf${wf}_new
 
-		warn_filter --f-root-path --f-src-num --f-str-num-def \
-			${path_warn}/${warn_base}_w${k}_old                \
-			>${path_warn}/${warn_base}_w${k}_old_filter_2
-
-		warn_filter --f-root-path --f-src-num --f-str-num-def \
-			${path_warn}/${warn_base}_w${k}_new                \
-			>${path_warn}/${warn_base}_w${k}_new_filter_2
+			fi
 
 
-		# -----  create the warning diff files
+			# -----  create the warning diff files
 
-		diff -u                                          \
-			${path_warn}/${warn_base}_w${k}_old_filter_0  \
-			${path_warn}/${warn_base}_w${k}_new_filter_0  \
-			>${path_warn}/${warn_base}_w${k}_diff_filter_0
+			diff -u                                           \
+				${path_warn}/${warn_base}--w${w}_wf${wf}_old   \
+				${path_warn}/${warn_base}--w${w}_wf${wf}_new   \
+				>${path_warn}/${warn_base}--w${w}_wf${wf}_diff
 
-		diff -u                                          \
-			${path_warn}/${warn_base}_w${k}_old_filter_1  \
-			${path_warn}/${warn_base}_w${k}_new_filter_1  \
-			>${path_warn}/${warn_base}_w${k}_diff_filter_1
+			if [[ ${sparse_found} -eq 1 ]] ; then
 
-		diff -u                                          \
-			${path_warn}/${warn_base}_w${k}_old_filter_2  \
-			${path_warn}/${warn_base}_w${k}_new_filter_2  \
-			>${path_warn}/${warn_base}_w${k}_diff_filter_2
+				diff -u                                           \
+					${path_warn}/${warn_base}--sparse_wf${wf}_old  \
+					${path_warn}/${warn_base}--sparse_wf${wf}_new  \
+					>${path_warn}/${warn_base}--sparse_wf${wf}_diff
 
+			fi
+
+		done
 	done
+done
 
+
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 fi
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 
-#_______________________________________________________________________________
+# ----- report results
 
-if [[ ${verbose} -ne 0 ]] ; then
-	echo "INFO: report results"                                               >&2
-fi
+# for each source file
 
-
-# tail strips off the file name and line numbers from the diff
-echo ""
-diff -u                                \
-	${path_warn}/${warn_base}_info_old  \
-	${path_warn}/${warn_base}_info_new  \
-	| tail -n -4
-
-
-
-if [[ $rf0 -eq 1 ]] ; then
-
-	for k in `seq 0 3`; do
-
-		# -----  report the results
-
-		# TODO: this is reporting only the most filtered version of
-		#       the warnings.  Add options to report other filter levels
-
-		echo ""
-		echo "==========  W=${k}  =========="
-		echo ""
-		warn_unfilter                                    \
-			${path_warn}/${warn_base}_w${k}_diff_filter_0 \
-			${path_warn}/${warn_base}_w${k}_old_filter_0  \
-			${path_warn}/${warn_base}_w${k}_new_filter_0
-
-	done
-
-fi
-
-
-# zzz TODO: add the $rf0 and $rf3 reports
-
-if [[ $rf1 -eq 1 ]] ; then
-
-	# zzz TODO: add the full set of reports, as in $rf2
-
-	for k in `seq 0 3`; do
-
-		# -----  report the results
-
-		# TODO: this is reporting only the most filtered version of
-		#       the warnings.  Add options to report other filter levels
-
-		echo ""
-		echo "==========  W=${k}  =========="
-		echo ""
-		warn_unfilter                                    \
-			${path_warn}/${warn_base}_w${k}_diff_filter_1 \
-			${path_warn}/${warn_base}_w${k}_old_filter_0  \
-			${path_warn}/${warn_base}_w${k}_new_filter_0
-
-	done
-
-fi
-
-
-if [[ $rf2 -eq 1 ]] ; then
-
-	# -----  number of lines in warning reports
+for warn_base in \
+	`ls -1 ${path_warn} | grep ".*--info_old" | sed -e 's|--info_old||'`; do
 
 	echo ""
-	echo "===============  Number of lines in warning reports"
+	cat << eod
 
-	for k in 0 1 2 3 ; do
+================================================================================
+================================================================================
+eod
+
+
+	# Report file name analyzed, old commit --oneline, new commit --oneline
+	# 'tail' strips off the info file names and line numbers from the diff
+	diff -u                                 \
+		${path_warn}/${warn_base}--info_old  \
+		${path_warn}/${warn_base}--info_new  \
+		| tail -n -4
+
+
+	for wf in `seq 0 3` ; do
+
+		if [[ ${wf} -eq 0 ]] && [[ ${wf0} -eq 0 ]] ; then
+			continue
+		fi
+
+		if [[ ${wf} -eq 1 ]] && [[ ${wf1} -eq 0 ]] ; then
+			continue
+		fi
+
+		if [[ ${wf} -eq 2 ]] && [[ ${wf2} -eq 0 ]] ; then
+			continue
+		fi
+
+		if [[ ${wf} -eq 3 ]] && [[ ${wf3} -eq 0 ]] ; then
+			continue
+		fi
 
 		echo ""
-		echo "=====  W=${k}"
+		echo "===============  Number of lines in warning reports"
 
-		echo -n "OLD: "
-		wc -l ${path_warn}/${warn_base}_w${k}_old_filter_2    | cut -d" " -f1
-		echo -n "NEW: "
-		wc -l ${path_warn}/${warn_base}_w${k}_new_filter_2    | cut -d" " -f1
+		for w in 0 1 2 3 ; do
 
-	done
+			echo ""
+			echo "==========  wf=${wf} W=${w}  =========="
 
+			echo -n "OLD: "
+			wc -l ${path_warn}/${warn_base}--w${w}_wf${wf}_old | cut -d" " -f1
+			echo -n "NEW: "
+			wc -l ${path_warn}/${warn_base}--w${w}_wf${wf}_new | cut -d" " -f1
 
-	# -----  count of each type of warning
+		done
 
-	echo ""
-	echo "===============  Count of each type of warning"
+		if [[ ${sparse_found} -eq 1 ]] ; then
 
-	for k in 0 1 2 3 ; do
-		
-		echo ""
-		echo "=====  W=${k}"
+			echo ""
+			echo "==========  wf=${wf} sparse  =========="
 
-		if [[ ${compiler_dtc} -eq 1 ]] ; then
-
-			cat ${path_warn}/${warn_base}_w${k}_old_filter_2 \
-				| grep "Warning ("                            \
-				| cut -f 2 -d"("                              \
-				| cut -f 1 -d")"                              \
-				| sort | uniq -c                              \
-				| sort -nr                                    \
-				> ${path_warn}/${warn_base}_w${k}_old_warning_by_type_filter_2
-
-			cat ${path_warn}/${warn_base}_w${k}_new_filter_2 \
-				| grep "Warning ("                            \
-				| cut -f 2 -d"("                              \
-				| cut -f 1 -d")"                              \
-				| sort | uniq -c                              \
-				| sort -nr                                    \
-				> ${path_warn}/${warn_base}_w${k}_new_warning_by_type_filter_2
-
-
-		else
-
-			cat ${path_warn}/${warn_base}_w${k}_old_filter_2 \
-				| grep "\[-W"                                 \
-				| cut -f 2 -d"["                              \
-				| cut -f 1 -d"]"                              \
-				| sort | uniq -c                              \
-				| sort -nr                                    \
-				> ${path_warn}/${warn_base}_w${k}_old_warning_by_type_filter_2
-
-			cat ${path_warn}/${warn_base}_w${k}_new_filter_2 \
-				| grep "\[-W"                                 \
-				| cut -f 2 -d"["                              \
-				| cut -f 1 -d"]"                              \
-				| sort | uniq -c                              \
-				| sort -nr                                    \
-				> ${path_warn}/${warn_base}_w${k}_new_warning_by_type_filter_2
+			echo -n "OLD: "
+			wc -l ${path_warn}/${warn_base}--sparse_wf${wf}_old | cut -d" " -f1
+			echo -n "NEW: "
+			wc -l ${path_warn}/${warn_base}--sparse_wf${wf}_new | cut -d" " -f1
 
 		fi
 
-		# echo ""
-		# echo "OLD:"
-		# cat ${path_warn}/${warn_base}_w${k}_old_warning_by_type_filter_2
-		# echo ""
-		# echo "NEW:"
-		# cat ${path_warn}/${warn_base}_w${k}_new_warning_by_type_filter_2
-
-		warn_count_by_type                                              \
-			${path_warn}/${warn_base}_w${k}_old_warning_by_type_filter_2 \
-			${path_warn}/${warn_base}_w${k}_new_warning_by_type_filter_2
-
-	done
-
-
-	echo ""
-	echo "===============  diff of warning reports"
-
-	for k in `seq 0 3`; do
-
-		# -----  report the results
-
-		# TODO: this is reporting only the most filtered version of
-		#       the warnings.  Add options to report other filter levels
 
 		echo ""
-		echo "==========  W=${k}  =========="
+		echo "===============  Count of each type of warning"
+
+		# ----- compile, w=0..3
+
+		for w in 0 1 2 3 ; do
+
+			echo ""
+			echo "==========  wf=${wf} W=${w}  =========="
+
+			if [[ ${compiler_dtc} -eq 1 ]] ; then
+
+				cat ${path_warn}/${warn_base}--w${w}_wf${wf}_old \
+					| grep "Warning ("                            \
+					| cut -f 2 -d"("                              \
+					| cut -f 1 -d")"                              \
+					| sort | uniq -c                              \
+					| sort -nr                                    \
+					> ${path_warn}/${warn_base}--w${w}_wf${wf}_old_by_type
+
+				cat ${path_warn}/${warn_base}--w${w}_wf${wf}_new \
+					| grep "Warning ("                            \
+					| cut -f 2 -d"("                              \
+					| cut -f 1 -d")"                              \
+					| sort | uniq -c                              \
+					| sort -nr                                    \
+					> ${path_warn}/${warn_base}--w${w}_wf${wf}_new_by_type
+
+			else
+
+				cat ${path_warn}/${warn_base}--w${w}_wf${wf}_old \
+					| grep "\[-W"                                 \
+					| cut -f 2 -d"["                              \
+					| cut -f 1 -d"]"                              \
+					| sort | uniq -c                              \
+					| sort -nr                                    \
+					> ${path_warn}/${warn_base}--w${w}_wf${wf}_old_by_type
+
+				cat ${path_warn}/${warn_base}--w${w}_wf${wf}_new \
+					| grep "\[-W"                                 \
+					| cut -f 2 -d"["                              \
+					| cut -f 1 -d"]"                              \
+					| sort | uniq -c                              \
+					| sort -nr                                    \
+					> ${path_warn}/${warn_base}--w${w}_wf${wf}_new_by_type
+
+			fi
+
+			warn_count_by_type                                      \
+				${path_warn}/${warn_base}--w${w}_wf${wf}_old_by_type \
+				${path_warn}/${warn_base}--w${w}_wf${wf}_new_by_type
+
+		done
+
+
+		# ----- sparse
+
+		if [[ ${sparse_found} -eq 1 ]] ; then
+
+			echo ""
+			echo "==========  wf=${wf} sparse  =========="
+
+			cat ${path_warn}/${warn_base}--sparse_wf${wf}_old \
+				| grep "warning: "                             \
+				| sed -e 's|.*warning: ||'                     \
+				| sort | uniq -c                               \
+				| sort -nr                                     \
+				> ${path_warn}/${warn_base}--sparse_wf${wf}_old_by_type
+
+			cat ${path_warn}/${warn_base}--sparse_wf${wf}_new \
+				| grep "warning: "                             \
+				| sed -e 's|.*warning: ||'                     \
+				| sort | uniq -c                               \
+				| sort -nr                                     \
+				> ${path_warn}/${warn_base}--sparse_wf${wf}_new_by_type
+
+			warn_count_by_type                                       \
+				${path_warn}/${warn_base}--sparse_wf${wf}_old_by_type \
+				${path_warn}/${warn_base}--sparse_wf${wf}_new_by_type
+
+		fi
+
+
 		echo ""
-		warn_unfilter                                    \
-			${path_warn}/${warn_base}_w${k}_diff_filter_2 \
-			${path_warn}/${warn_base}_w${k}_old_filter_0  \
-			${path_warn}/${warn_base}_w${k}_new_filter_0
+		echo "===============  diff of warning reports"
+
+		# warn_unfilter: use *_wf0_old and *_wf0_new
+		# --wf0 only shortens file path
+		#
+		# *_wf0_diff contains line numbers, so no need to unfilter
+
+		for w in `seq 0 3`; do
+
+			# -----  report the results
+
+			echo ""
+			echo ""
+			echo "==========  wf=${wf} W=${w}  =========="
+			if [[ ${wf} -eq 0 ]] ; then
+				echo ""
+				cat ${path_warn}/${warn_base}--w${w}_wf${wf}_diff
+			else
+				warn_unfilter                                    \
+					${path_warn}/${warn_base}--w${w}_wf${wf}_diff \
+					${path_warn}/${warn_base}--w${w}_wf0_old      \
+					${path_warn}/${warn_base}--w${w}_wf0_new
+			fi
+
+		done
+
+		if [[ ${sparse_found} -eq 1 ]] ; then
+
+			echo ""
+			echo ""
+			echo "==========  wf=${wf} sparse  =========="
+
+			if [[ ${wf} -eq 0 ]] ; then
+				echo ""
+				cat ${path_warn}/${warn_base}--sparse_wf${wf}_diff
+			else
+				warn_unfilter                                     \
+					${path_warn}/${warn_base}--sparse_wf${wf}_diff \
+					${path_warn}/${warn_base}--sparse_wf0_old      \
+					${path_warn}/${warn_base}--sparse_wf0_new
+			fi
+
+		fi
 
 	done
+done
+
+
+
+#===============================================================================
+#===============================================================================
+
+##  previous commit / branch
+
+#===============================================================================
+#===============================================================================
+
+if [[ "${old_commit}" != "" ]] ; then
+
+	if [[ ${hist_0_detached} -eq 1 ]] ; then
+
+		if [[ ${verbose} -ne 0 ]] ; then
+			echo "INFO: git checkout ${commit}"                                 >&2
+		fi
+
+		commit=`echo ${hist_0_commit} | cut -d" " -f1`
+		git checkout ${commit}
+
+	else
+
+		if [[ ${verbose} -ne 0 ]] ; then
+			echo "INFO: git checkout ${hist_0_branch}"                          >&2
+		fi
+
+		git checkout ${hist_0_branch}
+
+	fi
 
 fi
 
+hist_3_branch=`git branch | grep '*' | sed -e 's|* ||'`
+hist_3_commit=`git log -n1 --oneline`
 
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+if [[ ${verbose} -ne 0 ]] ; then
+	echo "INFO: At invocation:"                                               >&2
+	echo "INFO:    ${hist_0_branch}"                                          >&2
+	echo "INFO:    ${hist_0_commit}"                                          >&2
+	echo "INFO: After checkout old_commit:"                                   >&2
+	echo "INFO:    ${hist_1_branch}"                                          >&2
+	echo "INFO:    ${hist_1_commit}"                                          >&2
+	echo "INFO: After checkout new_commit:"                                   >&2
+	echo "INFO:    ${hist_2_branch}"                                          >&2
+	echo "INFO:    ${hist_2_commit}"                                          >&2
+	echo "INFO: After checkout previous commit:"                              >&2
+	echo "INFO:    ${hist_3_branch}"                                          >&2
+	echo "INFO:    ${hist_3_commit}"                                          >&2
+fi
 
 clean_up_for_exit
 

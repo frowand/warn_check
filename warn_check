@@ -264,8 +264,26 @@ if [[ "${old_commit}" != "" ]] ; then
 	for source_file in \
 		`git diff --numstat ${old_commit} ${new_commit} | cut -f3`; do
 
-		source_files[${source_files_count}]=${source_file}
-		source_files_count=$(( ${source_files_count} + 1 ))
+		# ignore other than .c, .s, .dts
+
+		source_base=${source_file}
+		source_base=${source_base%.c}
+		source_base=${source_base%.S}
+		source_base=${source_base%.dts}
+
+		# start with source_file, remove path, remove leading '/.'
+		source_suffix=${source_file}
+		source_suffix=${source_suffix/${source_base}//}
+		source_suffix=${source_suffix:2}
+
+		if [[ "${source_suffix}" == "c"   ]] || \
+			[[ "${source_suffix}" == "S"   ]] || \
+			[[ "${source_suffix}" == "dts" ]]    \
+			; then
+
+			source_files[${source_files_count}]=${source_file}
+			source_files_count=$(( ${source_files_count} + 1 ))
+		fi
 
 	done
 
@@ -381,6 +399,8 @@ else
 	echo  ""                                                                  >&2
 fi
 
+save_sparse_found=$sparse_found
+
 
 #===============================================================================
 #===============================================================================
@@ -417,6 +437,8 @@ for source_file in ${source_files[@]} ; do
 ################################################################################
 ################################################################################
 
+	sparse_found=$save_sparse_found
+
 	# strip off suffixes: .c, .S, .dts
 
 	source_base=${source_file}
@@ -431,6 +453,7 @@ for source_file in ${source_files[@]} ; do
 
 	if [[ "${source_suffix}" == "dts" ]] ; then
 		compiler_dtc=1
+		sparse_found = 0	# sparse does not handle .dts files
 	else
 		compiler_dtc=0
 	fi
@@ -523,10 +546,17 @@ for source_file in ${source_files[@]} ; do
 			echo "INFO: W=${w}"                                                 >&2
 		fi
 
+		# older kernel versions do not allow 'W=0'
+		if [[ ${w} -eq 0 ]] ; then
+			w_opt="W="
+		else
+			w_opt="W=${w}"
+		fi
+
 		rm ${object_file}
-		make W=${w} ${target_o} 1>/dev/null 2>/dev/null
+		make ${w_opt} ${target_o} 1>/dev/null 2>/dev/null
 		rm ${object_file}
-		make W=${w} ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}--w${w}_old
+		make ${w_opt} ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}--w${w}_old
 
 	done
 
@@ -638,6 +668,8 @@ for source_file in ${source_files[@]} ; do
 ################################################################################
 ################################################################################
 
+	sparse_found=$save_sparse_found
+
 	# strip off suffixes: .c, .S, .dts
 
 	source_base=${source_file}
@@ -652,6 +684,7 @@ for source_file in ${source_files[@]} ; do
 
 	if [[ "${source_suffix}" == "dts" ]] ; then
 		compiler_dtc=1
+		sparse_found = 0	# sparse does not handle .dts files
 	else
 		compiler_dtc=0
 	fi
@@ -723,10 +756,17 @@ for source_file in ${source_files[@]} ; do
 			echo "INFO: W=${w}"                                                 >&2
 		fi
 
+		# older kernel versions do not allow 'W=0'
+		if [[ ${w} -eq 0 ]] ; then
+			w_opt="W="
+		else
+			w_opt="W=${w}"
+		fi
+
 		rm ${object_file}
-		make W=${w} ${target_o} 1>/dev/null 2>/dev/null
+		make ${w_opt} ${target_o} 1>/dev/null 2>/dev/null
 		rm ${object_file}
-		make W=${w} ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}--w${w}_new
+		make ${w_opt} ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}--w${w}_new
 
 	done
 
@@ -941,15 +981,17 @@ eod
 			echo "==========  wf=${wf} sparse  =========="
 
 			cat ${path_warn}/${warn_base}--sparse_wf${wf}_old \
-				| grep "warning: "                             \
+				| grep -E "( warning: | error: )"              \
 				| sed -e 's|.*warning: ||'                     \
+				| sed -e 's|.*error: ||'                       \
 				| sort | uniq -c                               \
 				| sort -nr                                     \
 				> ${path_warn}/${warn_base}--sparse_wf${wf}_old_by_type
 
 			cat ${path_warn}/${warn_base}--sparse_wf${wf}_new \
-				| grep "warning: "                             \
+				| grep -E "( warning: | error: )"              \
 				| sed -e 's|.*warning: ||'                     \
+				| sed -e 's|.*error: ||'                       \
 				| sort | uniq -c                               \
 				| sort -nr                                     \
 				> ${path_warn}/${warn_base}--sparse_wf${wf}_new_by_type
@@ -978,7 +1020,7 @@ eod
 			echo "==========  wf=${wf} W=${w}  =========="
 			if [[ ${wf} -eq 0 ]] ; then
 				echo ""
-				cat ${path_warn}/${warn_base}--w${w}_wf${wf}_diff
+				tail -n +3 ${path_warn}/${warn_base}--w${w}_wf${wf}_diff
 			else
 				warn_unfilter                                    \
 					${path_warn}/${warn_base}--w${w}_wf${wf}_diff \
@@ -996,7 +1038,7 @@ eod
 
 			if [[ ${wf} -eq 0 ]] ; then
 				echo ""
-				cat ${path_warn}/${warn_base}--sparse_wf${wf}_diff
+				tail -n +3 ${path_warn}/${warn_base}--sparse_wf${wf}_diff
 			else
 				warn_unfilter                                     \
 					${path_warn}/${warn_base}--sparse_wf${wf}_diff \

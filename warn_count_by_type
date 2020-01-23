@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 # SPDX-License-Identifier: GPL-2.0
 #
-# Copyright 2019 Sony Corporation
+# Copyright 2019, 2020 Sony Corporation
 #
 # Author: Frank Rowand
 
@@ -114,7 +114,7 @@ foreach $line (@warn_by_type_old) {
 	$name = $line;
 	$name =~ s/[0-9]*\s+//;
 
-	if (exists($name_count_old{$name})) {
+	if (exists($warn_name_count_old{$name})) {
 		print STDERR "\n";
 		print STDERR "ERROR multiple lines report count for error '$name' in\n";
 		print STDERR "      file $filename_old\n";

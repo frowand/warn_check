@@ -1,7 +1,7 @@
 #! /bin/bash
 # SPDX-License-Identifier: GPL-2.0
 #
-# Copyright 2019 Sony Corporation
+# Copyright 2019, 2020 Sony Corporation
 #
 # Author: Frank Rowand
 
@@ -34,16 +34,15 @@ fi
 
 #_______________________________________________________________________________
 
-
 function usage
 {
 cat >&2 << eod
 
 usage:
-    `basename $0` -h | -help | --help
-    `basename $0` [options] SOURCE_FILE...
-    `basename $0` [options] --old-commit OLD_ID [--new-commit NEW_ID]
-    `basename $0` [options] --data-dir DIR
+    ${script_name} -h | -help | --help
+    ${script_name} [options] SOURCE_FILE...
+    ${script_name} [options] --old-commit OLD_ID [--new-commit NEW_ID]
+    ${script_name} [options] --data-dir DIR
 
        -d DIR         synonym for --data-dir
       --data-dir DIR  use existing warnings files in DIR, do not create new
@@ -113,9 +112,19 @@ usage:
 
   Messages from --verbose are sent to stderr.
 
+  Device tree source files (*.dts) that are located in non-standard
+  locations are not handled and will report spurious results.
+  This means that devicetree unittest overlay files in driver/of/unittest-data
+  can not be processed.
+
 eod
 
 }
+
+
+#_______________________________________________________________________________
+
+script_name=`basename $0`
 
 # following /usr/include/sysexits.h
 EX_OK=0
@@ -308,14 +317,14 @@ if [[ "${data_dir}" == "" ]] ; then
 		exit ${EX_USAGE}
 	fi
 
-	for source_file in ${source_files[@]} ; do
-		if [[ ! -f ${source_file} ]] || [[ ! -r ${source_file} ]] ; then
-			echo  ""                                                            >&2
-			echo  "ERROR: '${source_file}' is not a readable regular file"      >&2
-
-			error=1
-		fi
-	done
+#	for source_file in ${source_files[@]} ; do
+#		if [[ ! -f ${source_file} ]] || [[ ! -r ${source_file} ]] ; then
+#			echo  ""                                                            >&2
+#			echo  "ERROR: '${source_file}' is not a readable regular file"      >&2
+#
+#			error=1
+#		fi
+#	done
 
 	if [[ ${error} -ne 0 ]] ; then
 		exit ${EX_NOINPUT}
@@ -453,7 +462,7 @@ for source_file in ${source_files[@]} ; do
 
 	if [[ "${source_suffix}" == "dts" ]] ; then
 		compiler_dtc=1
-		sparse_found = 0	# sparse does not handle .dts files
+		sparse_found=0	# sparse does not handle .dts files
 	else
 		compiler_dtc=0
 	fi
@@ -490,36 +499,40 @@ for source_file in ${source_files[@]} ; do
 ################################################################################
 
 
-	# Try building the object file.
-	#
-	# - If it already exists, make will do nothing.
-	#
-	# - If it does not exist and fails to make, then attempts to build for
-	#   various values of "W=" will not succeed.  The failure to build may
-	#   be for one of many reasons, including missing the required CONFIG_*
-	#   option.
-	#
-	# If the object file builds because of a git checkout, then other files
-	# may also be stale and thus build.  Doing so at this point prevents
-	# any warnings from these other files being included in the warning file
-	# when that the object file is built with various "W=" values later in
-	# this script.
+	if [[ -f ${source_file} ]] ; then
 
-	if [[ ${verbose} -ne 0 ]] ; then
-		echo "INFO: file '${object_file}' did not exist, creating it"          >&2
-	fi
+		# Try building the object file.
+		#
+		# - If it already exists, make will do nothing.
+		#
+		# - If it does not exist and fails to make, then attempts to build for
+		#   various values of "W=" will not succeed.  The failure to build may
+		#   be for one of many reasons, including missing the required CONFIG_*
+		#   option.
+		#
+		# If the object file builds because of a git checkout, then other files
+		# may also be stale and thus build.  Doing so at this point prevents
+		# any warnings from these other files being included in the warning file
+		# when that the object file is built with various "W=" values later in
+		# this script.
 
-	make ${target_o} 1>/dev/null 2>/dev/null
+		if [[ ${verbose} -ne 0 ]] ; then
+			echo "INFO: file '${object_file}' did not exist, creating it"       >&2
+		fi
 
-	if [[ ! -f ${object_file} || ! -r ${object_file} ]] ; then
+		make ${target_o} 1>/dev/null 2>/dev/null
 
-		echo  ""                                                               >&2
-		echo  "ERROR: file '${object_file}' did not exist and unable to"       >&2
-		echo  "       build ${target_o}"                                       >&2
-		echo  ""                                                               >&2
+		if [[ ! -f ${object_file} || ! -r ${object_file} ]] ; then
 
-		clean_up_for_exit
-		exit ${EX_OSERR}
+			echo  ""                                                            >&2
+			echo  "ERROR: file '${object_file}' did not exist and unable to"    >&2
+			echo  "       build ${target_o}"                                    >&2
+			echo  ""                                                            >&2
+
+			clean_up_for_exit
+			exit ${EX_OSERR}
+		fi
+
 	fi
 
 
@@ -537,38 +550,51 @@ for source_file in ${source_files[@]} ; do
 	git log -n1 --oneline >>${path_warn}/${warn_base}--info_old
 	echo ""               >>${path_warn}/${warn_base}--info_old
 
+	if [[ -f ${source_file} ]] ; then
 
-	# ----- compile, w=0..3
+		# ----- compile, w=0..3
 
-	for w in `seq 0 3`; do
+		for w in `seq 0 3`; do
 
-		if [[ ${verbose} -ne 0 ]] ; then
-			echo "INFO: W=${w}"                                                 >&2
+			if [[ ${verbose} -ne 0 ]] ; then
+				echo "INFO: W=${w}"                                              >&2
+			fi
+
+			# older kernel versions do not allow 'W=0'
+			if [[ ${w} -eq 0 ]] ; then
+				w_opt="W="
+			else
+				w_opt="W=${w}"
+			fi
+
+			rm ${object_file} 2>/dev/null
+			make ${w_opt} ${target_o} 1>/dev/null 2>/dev/null
+			rm ${object_file} 2>/dev/null
+			make ${w_opt} ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}--w${w}_old
+
+		done
+
+
+		# ----- sparse
+
+		if [[ ${sparse_found} -eq 1 ]] ; then
+
+			# C=2 forces build even if dependencies satisfied
+
+			make C=2 ${target_o} 1>/dev/null 2>/dev/null
+			make C=2 ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}--sparse_old
+
 		fi
 
-		# older kernel versions do not allow 'W=0'
-		if [[ ${w} -eq 0 ]] ; then
-			w_opt="W="
-		else
-			w_opt="W=${w}"
-		fi
+	else
 
-		rm ${object_file}
-		make ${w_opt} ${target_o} 1>/dev/null 2>/dev/null
-		rm ${object_file}
-		make ${w_opt} ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}--w${w}_old
+		# create empty warnings files
 
-	done
+		for w in `seq 0 3`; do
+			touch ${path_warn}/${warn_base}--w${w}_old
+		done
 
-
-	# ----- sparse
-
-	if [[ ${sparse_found} -eq 1 ]] ; then
-
-		# C=2 forces build even if dependencies satisfied
-
-		make C=2 ${target_o} 1>/dev/null 2>/dev/null
-		make C=2 ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}--sparse_old
+		touch ${path_warn}/${warn_base}--sparse_old
 
 	fi
 
@@ -684,7 +710,7 @@ for source_file in ${source_files[@]} ; do
 
 	if [[ "${source_suffix}" == "dts" ]] ; then
 		compiler_dtc=1
-		sparse_found = 0	# sparse does not handle .dts files
+		sparse_found=0	# sparse does not handle .dts files
 	else
 		compiler_dtc=0
 	fi
@@ -734,50 +760,63 @@ for source_file in ${source_files[@]} ; do
 	echo ""               >>${path_warn}/${warn_base}--info_new
 
 
+	if [[ -f ${source_file} ]] ; then
 
-	# Try building the object file.
-	#
-	# - If it already exists, make will do nothing.
-	#
-	# If the object file builds because of a git checkout, then other files
-	# may also be stale and thus build.  Doing so at this point prevents
-	# any warnings from these other files being included in the warning file
-	# when that the object file is built with various "W=" values later in
-	# this script.
+		# Try building the object file.
+		#
+		# - If it already exists, make will do nothing.
+		#
+		# If the object file builds because of a git checkout, then other files
+		# may also be stale and thus build.  Doing so at this point prevents
+		# any warnings from these other files being included in the warning file
+		# when that the object file is built with various "W=" values later in
+		# this script.
 
-	make ${object_file} 1>/dev/null 2>/dev/null
+		make ${object_file} 1>/dev/null 2>/dev/null
 
 
-	# ----- compile, w=0..3
+		# ----- compile, w=0..3
 
-	for w in `seq 0 3`; do
+		for w in `seq 0 3`; do
 
-		if [[ ${verbose} -ne 0 ]] ; then
-			echo "INFO: W=${w}"                                                 >&2
+			if [[ ${verbose} -ne 0 ]] ; then
+				echo "INFO: W=${w}"                                              >&2
+			fi
+
+			# older kernel versions do not allow 'W=0'
+			if [[ ${w} -eq 0 ]] ; then
+				w_opt="W="
+			else
+				w_opt="W=${w}"
+			fi
+
+			rm ${object_file} 2>/dev/null
+			make ${w_opt} ${target_o} 1>/dev/null 2>/dev/null
+			rm ${object_file} 2>/dev/null
+			make ${w_opt} ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}--w${w}_new
+
+		done
+
+		# ----- sparse
+
+		if [[ ${sparse_found} -eq 1 ]] ; then
+
+			# C=2 forces build even if dependencies satisfied
+
+			make C=2 ${target_o} 1>/dev/null 2>/dev/null
+			make C=2 ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}--sparse_new
+
 		fi
 
-		# older kernel versions do not allow 'W=0'
-		if [[ ${w} -eq 0 ]] ; then
-			w_opt="W="
-		else
-			w_opt="W=${w}"
-		fi
+	else
 
-		rm ${object_file}
-		make ${w_opt} ${target_o} 1>/dev/null 2>/dev/null
-		rm ${object_file}
-		make ${w_opt} ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}--w${w}_new
+		# create empty warnings files
 
-	done
+		for w in `seq 0 3`; do
+			touch ${path_warn}/${warn_base}--w${w}_new
+		done
 
-	# ----- sparse
-
-	if [[ ${sparse_found} -eq 1 ]] ; then
-
-		# C=2 forces build even if dependencies satisfied
-
-		make C=2 ${target_o} 1>/dev/null 2>/dev/null
-		make C=2 ${target_o} 1>/dev/null 2>${path_warn}/${warn_base}--sparse_new
+		touch ${path_warn}/${warn_base}--sparse_new
 
 	fi
 
@@ -863,7 +902,6 @@ for warn_base in \
 ================================================================================
 eod
 
-
 	# Report file name analyzed, old commit --oneline, new commit --oneline
 	# 'tail' strips off the info file names and line numbers from the diff
 	diff -u                                 \
@@ -905,7 +943,7 @@ eod
 
 		done
 
-		if [[ ${sparse_found} -eq 1 ]] ; then
+		if [[ -f ${path_warn}/${warn_base}--sparse_wf${wf}_old ]] ; then
 
 			echo ""
 			echo "==========  wf=${wf} sparse  =========="

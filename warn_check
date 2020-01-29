@@ -112,10 +112,10 @@ usage:
 
   Messages from --verbose are sent to stderr.
 
-  Device tree source files (*.dts) that are located in non-standard
-  locations are not handled and will report spurious results.
-  This means that devicetree unittest overlay files in driver/of/unittest-data
-  can not be processed.
+  Device tree source files (*.dts) that have dtb.o Makefile targets
+  are not handled and will report 'No rule to make target *.dtb'.
+  This means that devicetree unittest dts files in driver/of/unittest-data
+  will not be properly processed.
 
 eod
 

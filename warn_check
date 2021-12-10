@@ -161,6 +161,12 @@ unset hist_2_commit
 unset hist_3_branch
 unset hist_3_commit
 
+# exit if not in a git repo
+if ! `git rev-parse`; then
+	# 'git rev-parse' will report the error
+	exit ${EX_USAGE}
+fi
+
 hist_0_branch=`git branch | grep '*' | sed -e 's|* ||'`
 hist_0_commit=`git log -n1 --oneline`
 
